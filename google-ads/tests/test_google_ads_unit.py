@@ -60,15 +60,25 @@ def ads_client():
     ]
     ga_service = MagicMock(name="GoogleAdsService")
     ga_service.search.return_value = [_customer_row("Pacific/Auckland")]
+    ad_group_service = MagicMock(name="AdGroupService")
+    ad_group_service.ad_group_path.return_value = "customers/2222222222/adGroups/5"
+    ad_group_ad_service = MagicMock(name="AdGroupAdService")
+    ad_group_ad_service.mutate_ad_group_ads.return_value.results = [
+        MagicMock(resource_name="customers/2222222222/adGroupAds/5~7")
+    ]
     services = {
         "CampaignBudgetService": budget_service,
         "CampaignService": campaign_service,
         "GoogleAdsService": ga_service,
+        "AdGroupService": ad_group_service,
+        "AdGroupAdService": ad_group_ad_service,
     }
     client.get_service = lambda name, **kwargs: services[name]
 
     with patch.object(google_ads_module, "_get_google_ads_client", return_value=client):
-        yield SimpleNamespace(budget=budget_service, campaign=campaign_service, ga=ga_service)
+        yield SimpleNamespace(
+            budget=budget_service, campaign=campaign_service, ga=ga_service, ad_group_ad=ad_group_ad_service
+        )
 
 
 def _customer_row(time_zone):
@@ -213,3 +223,73 @@ async def test_failed_report_returns_safe_action_error(make_context, ads_client,
     assert result.type == ResultType.ACTION_ERROR
     assert "Reconnect your Google Ads account" in result.result.message
     assert "sensitive provider response" not in result.result.message
+
+
+# ---- create_responsive_search_ad ----
+
+RSA_INPUTS = {
+    "login_customer_id": "1111111111",
+    "customer_id": "2222222222",
+    "ad_group_id": "5",
+    "headlines": ["Headline one", "Headline two", "Headline three"],
+    "descriptions": ["Description one.", "Description two."],
+    "final_url": "https://example.com",
+}
+
+
+def _sent_rsa(ad_group_ad_service):
+    operations = ad_group_ad_service.mutate_ad_group_ads.call_args.kwargs["operations"]
+    return operations[0].create.ad.responsive_search_ad
+
+
+async def test_create_rsa_sends_text_at_the_limit_unchanged(make_context, ads_client):
+    headline = "H" * 30
+    description = "D" * 90
+    inputs = {
+        **RSA_INPUTS,
+        "headlines": [headline, "Headline two", "Headline three"],
+        "descriptions": [description, "Description two."],
+        "path1": "P" * 15,
+    }
+
+    result = await google_ads.execute_action("create_responsive_search_ad", inputs, make_context(auth=AUTH))
+
+    assert result.type == ResultType.ACTION
+    rsa = _sent_rsa(ads_client.ad_group_ad)
+    assert rsa.headlines[0].text == headline
+    assert rsa.descriptions[0].text == description
+    assert rsa.path1 == "P" * 15
+
+
+@pytest.mark.parametrize(
+    "overrides, expected",
+    [
+        ({"headlines": ["H" * 31, "Headline two", "Headline three"]}, "headline 1 is 31 characters (max 30)"),
+        ({"descriptions": ["Description one.", "D" * 95]}, "description 2 is 95 characters (max 90)"),
+        ({"path1": "P" * 16}, "path1 is 16 characters (max 15)"),
+        ({"path2": "P" * 20}, "path2 is 20 characters (max 15)"),
+    ],
+)
+async def test_create_rsa_rejects_over_limit_text_instead_of_truncating(make_context, ads_client, overrides, expected):
+    inputs = {**RSA_INPUTS, **overrides}
+
+    result = await google_ads.execute_action("create_responsive_search_ad", inputs, make_context(auth=AUTH))
+
+    assert result.type == ResultType.ACTION_ERROR
+    assert expected in result.result.message
+    ads_client.ad_group_ad.mutate_ad_group_ads.assert_not_called()
+
+
+async def test_create_rsa_names_every_over_limit_item(make_context, ads_client):
+    inputs = {
+        **RSA_INPUTS,
+        "headlines": ["H" * 31, "Headline two", "H" * 33],
+        "descriptions": ["D" * 91, "Description two."],
+    }
+
+    result = await google_ads.execute_action("create_responsive_search_ad", inputs, make_context(auth=AUTH))
+
+    assert result.type == ResultType.ACTION_ERROR
+    for expected in ("headline 1 is 31", "headline 3 is 33", "description 1 is 91"):
+        assert expected in result.result.message
+    ads_client.ad_group_ad.mutate_ad_group_ads.assert_not_called()

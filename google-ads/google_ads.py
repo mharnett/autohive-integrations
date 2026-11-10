@@ -855,6 +855,26 @@ class CreateAdGroupAction(ActionHandler):
 # ---- Action Handlers: AD Operations ----
 
 
+RSA_HEADLINE_MAX = 30
+RSA_DESCRIPTION_MAX = 90
+RSA_PATH_MAX = 15
+
+
+def _rsa_text_over_limit(headlines, descriptions, path1, path2):
+    """Returns one message per RSA text item over Google's length limit."""
+    problems = []
+    for i, text in enumerate(headlines, start=1):
+        if len(text) > RSA_HEADLINE_MAX:
+            problems.append(f"headline {i} is {len(text)} characters (max {RSA_HEADLINE_MAX})")
+    for i, text in enumerate(descriptions, start=1):
+        if len(text) > RSA_DESCRIPTION_MAX:
+            problems.append(f"description {i} is {len(text)} characters (max {RSA_DESCRIPTION_MAX})")
+    for name, text in (("path1", path1), ("path2", path2)):
+        if text and len(text) > RSA_PATH_MAX:
+            problems.append(f"{name} is {len(text)} characters (max {RSA_PATH_MAX})")
+    return problems
+
+
 @google_ads.action("create_responsive_search_ad")
 class CreateResponsiveSearchAdAction(ActionHandler):
     """Action handler for creating a Responsive Search Ad."""
@@ -887,6 +907,10 @@ class CreateResponsiveSearchAdAction(ActionHandler):
         if len(descriptions) < 2:
             return ActionError(message="At least 2 descriptions are required for RSA")
 
+        too_long = _rsa_text_over_limit(headlines[:15], descriptions[:4], path1, path2)
+        if too_long:
+            return ActionError(message="RSA text is over Google's limits and was not truncated: " + "; ".join(too_long))
+
         try:
             ad_group_ad_service = client.get_service("AdGroupAdService")
             ad_group_service = client.get_service("AdGroupService")
@@ -906,20 +930,20 @@ class CreateResponsiveSearchAdAction(ActionHandler):
             # Add headlines
             for headline_text in headlines[:15]:
                 ad_text_asset = client.get_type("AdTextAsset")
-                ad_text_asset.text = headline_text[:30]
+                ad_text_asset.text = headline_text
                 ad_group_ad.ad.responsive_search_ad.headlines.append(ad_text_asset)
 
             # Add descriptions
             for desc_text in descriptions[:4]:
                 ad_text_asset = client.get_type("AdTextAsset")
-                ad_text_asset.text = desc_text[:90]
+                ad_text_asset.text = desc_text
                 ad_group_ad.ad.responsive_search_ad.descriptions.append(ad_text_asset)
 
             # Add path
             if path1:
-                ad_group_ad.ad.responsive_search_ad.path1 = path1[:15]
+                ad_group_ad.ad.responsive_search_ad.path1 = path1
             if path2:
-                ad_group_ad.ad.responsive_search_ad.path2 = path2[:15]
+                ad_group_ad.ad.responsive_search_ad.path2 = path2
 
             response = ad_group_ad_service.mutate_ad_group_ads(
                 customer_id=customer_id, operations=[ad_group_ad_operation]

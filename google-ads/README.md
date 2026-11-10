@@ -156,6 +156,8 @@ Creates a new Responsive Search Ad (RSA) in an existing ad group with multiple h
 - `path2` (optional): Second path text in display URL (max 15 characters)
 - `status` (optional): Status for the ad. Defaults to PAUSED
 
+Text over these limits is not truncated. The action fails with an error naming each over-limit item and its length.
+
 ---
 
 #### `update_ad`
